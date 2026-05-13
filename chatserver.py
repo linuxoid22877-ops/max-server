@@ -1,19 +1,25 @@
 import asyncio
 import websockets
 import http
+import os
 
 HOST = "0.0.0.0"
-PORT = 8765
+PORT = int(os.environ.get("PORT", 8765))
 
 clients = set()
-history = []  # храним только 5 последних сообщений
+history = []  # последние 5 сообщений
 
 
-# --- FIX: HTTP/HEAD requests (health checks) ---
+# --- FIX: НЕ ЛОМАЕМ WebSocket handshake ---
 async def process_request(path, request_headers):
-    # Render / прокси могут слать HEAD / GET /
-    # просто отвечаем OK, чтобы сервер не падал
-    return http.HTTPStatus.OK, [], b"OK"
+    # если это WebSocket upgrade — НЕ трогаем
+    upgrade = request_headers.get("Upgrade", "").lower()
+
+    if upgrade == "websocket":
+        return None  # <- ВАЖНО: пропустить handshake
+
+    # иначе это обычный HTTP (Render health check)
+    return (http.HTTPStatus.OK, [], b"OK")
 
 
 async def broadcast(message):
@@ -25,7 +31,6 @@ async def broadcast(message):
         except:
             dead.add(ws)
 
-    # чистим мёртвые соединения
     for ws in dead:
         clients.discard(ws)
 
@@ -35,19 +40,17 @@ async def handler(ws):
     clients.add(ws)
 
     try:
-        # отправляем историю новому клиенту
+        # отправляем историю
         for msg in history:
             await ws.send(msg)
 
         async for message in ws:
             print("Received:", message)
 
-            # сохраняем только 5 последних
             history.append(message)
             if len(history) > 5:
                 history.pop(0)
 
-            # рассылаем всем
             await broadcast(message)
 
     except websockets.exceptions.ConnectionClosed:
@@ -58,15 +61,15 @@ async def handler(ws):
 
 
 async def main():
-    print(f"Server running on ws://{HOST}:{PORT}")
+    print(f"Running on ws://{HOST}:{PORT}")
 
     async with websockets.serve(
         handler,
         HOST,
         PORT,
-        process_request=process_request  # <-- ВОТ ГЛАВНЫЙ ФИКС
+        process_request=process_request
     ):
-        await asyncio.Future()  # run forever
+        await asyncio.Future()
 
 
 if __name__ == "__main__":
