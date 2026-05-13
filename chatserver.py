@@ -1,74 +1,49 @@
 import asyncio
-import websockets
-import http
 import os
-
-HOST = "0.0.0.0"
-PORT = int(os.environ.get("PORT", 8765))
+from websockets.asyncio.server import serve
 
 clients = set()
-history = []  # последние 5 сообщений
 
+async def handler(websocket):
+    print("CLIENT CONNECTED")
 
-# --- FIX: НЕ ЛОМАЕМ WebSocket handshake ---
-async def process_request(path, request_headers):
-    # если это WebSocket upgrade — НЕ трогаем
-    upgrade = request_headers.get("Upgrade", "").lower()
-
-    if upgrade == "websocket":
-        return None  # <- ВАЖНО: пропустить handshake
-
-    # иначе это обычный HTTP (Render health check)
-    return (http.HTTPStatus.OK, [], b"OK")
-
-
-async def broadcast(message):
-    dead = set()
-
-    for ws in clients:
-        try:
-            await ws.send(message)
-        except:
-            dead.add(ws)
-
-    for ws in dead:
-        clients.discard(ws)
-
-
-async def handler(ws):
-    print("Client connected")
-    clients.add(ws)
+    clients.add(websocket)
 
     try:
-        # отправляем историю
-        for msg in history:
-            await ws.send(msg)
+        async for message in websocket:
+            print("MESSAGE:", message)
 
-        async for message in ws:
-            print("Received:", message)
+            dead = set()
 
-            history.append(message)
-            if len(history) > 5:
-                history.pop(0)
+            for client in clients:
+                try:
+                    await client.send(message)
+                except:
+                    dead.add(client)
 
-            await broadcast(message)
+            for d in dead:
+                clients.remove(d)
 
-    except websockets.exceptions.ConnectionClosed:
-        pass
+    except Exception as e:
+        print("ERROR:", e)
+
     finally:
-        clients.discard(ws)
-        print("Client disconnected")
+        clients.discard(websocket)
+        print("CLIENT DISCONNECTED")
 
 
 async def main():
-    print(f"Running on ws://{HOST}:{PORT}")
+    port = int(os.environ.get("PORT", 8765))
 
-    async with websockets.serve(
+    print("STARTING ON PORT", port)
+
+    async with serve(
         handler,
-        HOST,
-        PORT,
-        process_request=process_request
+        "0.0.0.0",
+        port
     ):
+        print("WEBSOCKET SERVER STARTED")
+
         await asyncio.Future()
 
 
