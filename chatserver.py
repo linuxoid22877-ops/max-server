@@ -1,50 +1,73 @@
 import asyncio
 import websockets
-import os
-from collections import deque
+import http
 
-# Порт для большинства хостингов (Render, Railway и т.д.)
-PORT = int(os.environ.get("PORT", 8080))
+HOST = "0.0.0.0"
+PORT = 8765
 
 clients = set()
-history = deque(maxlen=100)  # последние 100 сообщений
+history = []  # храним только 5 последних сообщений
+
+
+# --- FIX: HTTP/HEAD requests (health checks) ---
+async def process_request(path, request_headers):
+    # Render / прокси могут слать HEAD / GET /
+    # просто отвечаем OK, чтобы сервер не падал
+    return http.HTTPStatus.OK, [], b"OK"
+
+
+async def broadcast(message):
+    dead = set()
+
+    for ws in clients:
+        try:
+            await ws.send(message)
+        except:
+            dead.add(ws)
+
+    # чистим мёртвые соединения
+    for ws in dead:
+        clients.discard(ws)
+
 
 async def handler(ws):
+    print("Client connected")
     clients.add(ws)
-    print(f"✅ Client connected | Total: {len(clients)}")
-
-    # Отправляем историю
-    for msg in history:
-        try:
-            await ws.send(msg)
-        except:
-            pass
 
     try:
-        async for msg in ws:
-            print("📨 MSG:", msg)
-            history.append(msg)
+        # отправляем историю новому клиенту
+        for msg in history:
+            await ws.send(msg)
 
-            # Рассылаем всем кроме отправителя
-            dead = set()
-            for client in list(clients):
-                if client != ws:
-                    try:
-                        await client.send(msg)
-                    except:
-                        dead.add(client)
+        async for message in ws:
+            print("Received:", message)
 
-            for d in dead:
-                clients.discard(d)
+            # сохраняем только 5 последних
+            history.append(message)
+            if len(history) > 5:
+                history.pop(0)
 
+            # рассылаем всем
+            await broadcast(message)
+
+    except websockets.exceptions.ConnectionClosed:
+        pass
     finally:
         clients.discard(ws)
-        print(f"❌ Client disconnected | Total: {len(clients)}")
+        print("Client disconnected")
+
 
 async def main():
-    print(f"🚀 Chat server started on port {PORT}")
-    async with websockets.serve(handler, "0.0.0.0", PORT):
-        await asyncio.Future()  # работает вечно
+    print(f"Server running on ws://{HOST}:{PORT}")
+
+    async with websockets.serve(
+        handler,
+        HOST,
+        PORT,
+        process_request=process_request  # <-- ВОТ ГЛАВНЫЙ ФИКС
+    ):
+        await asyncio.Future()  # run forever
+
 
 if __name__ == "__main__":
     asyncio.run(main())
